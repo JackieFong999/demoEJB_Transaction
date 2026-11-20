@@ -8,7 +8,7 @@
   * { box-sizing: border-box; }
   body { margin:0; font:16px/1.6 "Segoe UI",system-ui,sans-serif;
          background:#0f1420; color:#e6edf7; display:flex; justify-content:center; padding:40px 20px; }
-  .wrap { width:100%; max-width:640px; }
+  .wrap { width:100%; max-width:660px; }
   h1 { font-size:1.35rem; margin:0 0 6px; }
   .sub { color:#8b9bb4; font-size:.92rem; margin-bottom:24px; }
   .card { background:#171e2e; border:1px solid #24304a; border-radius:14px; padding:22px; margin-bottom:18px; }
@@ -16,42 +16,134 @@
   label { display:block; font-size:.85rem; color:#8b9bb4; margin-bottom:6px; }
   input { width:100%; padding:11px 12px; border-radius:9px; border:1px solid #2c3a56;
           background:#0f1420; color:#e6edf7; font-size:1rem; margin-bottom:14px; }
-  button { background:#2f6df6; color:#fff; border:0; border-radius:9px; padding:11px 22px;
-           font-size:.95rem; font-weight:600; cursor:pointer; }
-  button:hover { background:#3b7bff; }
+  .buttons { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button { border:0; border-radius:9px; padding:11px 22px; font-size:.95rem; font-weight:600; cursor:pointer; }
+  .primary { background:#2f6df6; color:#fff; }
+  .primary:hover { background:#3b7bff; }
+  .js { background:#1f6b3f; color:#eaffef; }
+  .js:hover { background:#268a4f; }
+  .js:disabled { opacity:.6; cursor:progress; }
+  .msg { padding:13px 15px; border-radius:10px; font-size:.93rem; margin-bottom:14px; word-break:break-word; }
+  .msg:empty { display:none; }
+  .ok { background:#12301f; border:1px solid #1f6b3f; color:#8ef0b0; }
+  .bad { background:#3a1620; border:1px solid #7a2537; color:#ffb3c1; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid #24304a; }
+  th { color:#8b9bb4; font-weight:600; font-size:.78rem; text-transform:uppercase; letter-spacing:.4px; }
+  .empty { color:#8b9bb4; font-style:italic; }
   .note { color:#8b9bb4; font-size:.85rem; margin:14px 0 0; }
   code { background:#0b101b; padding:2px 6px; border-radius:5px; color:#ffd479; font-size:.88em; }
-  ul { margin:8px 0 0 18px; padding:0; color:#8b9bb4; font-size:.88rem; }
+  #jsPanel { display:none; }
+  #jsPanel.on { display:block; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>demoEJB-Transaction</h1>
-  <div class="sub">One Submit writes to <b>two MySQL tables</b> through one <code>@Stateless</code> EJB — committed or rolled back together.</div>
+  <div class="sub">One submit writes to <b>two MySQL tables</b> through one <code>@Stateless</code> EJB — committed or rolled back together.
+    Same fields, same servlet, two front-end styles.</div>
 
   <div class="card">
     <h2>Register a customer</h2>
-    <form method="post" action="register">
+    <form id="f" method="post" action="register">
       <label for="custName">Customer Name</label>
       <input id="custName" name="custName" autocomplete="off" required autofocus>
 
       <label for="tel">Tel</label>
       <input id="tel" name="tel" autocomplete="off" required>
 
-      <button type="submit">Submit</button>
+      <div class="buttons">
+        <button type="submit" class="primary" id="btnForm">Submit</button>
+        <button type="button" class="js" id="btnJs">Submit-JS</button>
+      </div>
     </form>
-    <p class="note">Writes <code>tblCustomer(Cust_Name, Tel)</code> + <code>tblAccount(Cust_Name, 'D', 0.00)</code>
-    inside one container-managed JTA transaction.</p>
+    <p class="note">
+      <b>Submit</b> = classic form POST: the browser navigates and the servlet returns a whole page.<br>
+      <b>Submit-JS</b> = <code>fetch('register')</code>, then <b>parses the HTML that came back</b> and updates the panel below.
+      No servlet change, no JSON endpoint — the page never reloads.
+    </p>
   </div>
 
-  <div class="card">
-    <h2>What the transaction does</h2>
-    <ul>
-      <li>Success → both rows commit.</li>
-      <li>Duplicate customer name → primary-key error → <b>both</b> roll back.</li>
-      <li>Business error after both INSERTs → <b>both</b> roll back (see README: forced-failure test).</li>
-    </ul>
+  <div class="card" id="jsPanel">
+    <h2>Submit-JS result <span style="text-transform:none;letter-spacing:0">(no reload)</span></h2>
+    <div class="msg" id="jsMsg"></div>
+    <table>
+      <thead><tr><th>Cust_Name</th><th>Tel</th></tr></thead>
+      <tbody id="jsRows"></tbody>
+    </table>
+    <p class="note" id="jsMeta"></p>
   </div>
 </div>
+
+<script>
+  const btnJs  = document.getElementById('btnJs');
+  const panel  = document.getElementById('jsPanel');
+  const msgEl  = document.getElementById('jsMsg');
+  const rowsEl = document.getElementById('jsRows');
+  const metaEl = document.getElementById('jsMeta');
+
+  const say = (kind, text) => { msgEl.className = 'msg ' + kind; msgEl.textContent = text; };
+
+  function renderRows(rows) {
+    rowsEl.replaceChildren();
+    if (!rows.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 2; td.className = 'empty'; td.textContent = '(no rows)';
+      tr.appendChild(td); rowsEl.appendChild(tr);
+      return;
+    }
+    for (const cells of rows) {
+      const tr = document.createElement('tr');
+      for (const text of cells) {
+        const td = document.createElement('td'); td.textContent = text; tr.appendChild(td);
+      }
+      rowsEl.appendChild(tr);
+    }
+  }
+
+  btnJs.addEventListener('click', async () => {
+    const custName = document.getElementById('custName').value.trim();
+    const tel      = document.getElementById('tel').value.trim();
+
+    panel.classList.add('on');
+    if (!custName || !tel) { say('bad', 'Both fields are required.'); return; }
+
+    btnJs.disabled = true;
+    say('', 'calling /register …');
+
+    const started = performance.now();
+    try {
+      // 1) plain form POST — exactly what the form does, but without navigating away
+      const res = await fetch('register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ custName, tel })
+      });
+
+      // 2) the servlet answers with a FULL HTML PAGE (it has no JSON mode).
+      //    Parse it in memory and lift out the two things we want:
+      //      - the .msg block (class "msg ok" / "msg bad")
+      //      - the <tbody> rows of the result table
+      const doc  = new DOMParser().parseFromString(await res.text(), 'text/html');
+      const box  = doc.querySelector('.msg');
+      const kind = box && box.classList.contains('ok') ? 'ok' : 'bad';
+      const text = box ? box.textContent.trim() : '(no message in response)';
+      const rows = [...doc.querySelectorAll('table tbody tr')]
+                     .map(tr => [...tr.children].map(td => td.textContent.trim()))
+                     .filter(cells => cells.length > 1);          // drops the "(no rows)" placeholder
+
+      const ms = Math.round(performance.now() - started);
+      say(kind, text);
+      renderRows(rows);
+      metaEl.textContent = `${rows.length} row(s) parsed out of the HTML response · ${ms} ms · `
+                         + `servlet unchanged (no ?format=json) — this page did all the work`;
+    } catch (err) {
+      say('bad', 'fetch failed: ' + err);
+    } finally {
+      btnJs.disabled = false;
+    }
+  });
+</script>
 </body>
 </html>

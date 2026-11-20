@@ -26,10 +26,11 @@ MySQL 8.4 (container mysqljavadev, host 127.0.0.1:3308, schema demoEJB_DB)
 |---|---|
 | `src/main/java/com/example/transaction/CustomerAccountBean.java` | **The EJB.** Both INSERTs + the transaction demo hooks. |
 | `src/main/java/com/example/transaction/RegisterServlet.java` | Web entry point, `@EJB` injection, renders the result page. |
-| `src/main/webapp/index.html` | Page with exactly two fields: Customer Name, Tel. |
+| `src/main/webapp/index.html` | Page with exactly two fields and **two buttons**: `Submit` (form POST) and `Submit-JS` (`fetch`, no reload). |
 | `src/main/webapp/WEB-INF/beans.xml` | Marks the WAR a bean archive (so `@EJB` in the servlet is processed). |
 | `sql/schema.sql` | Re-runnable DDL for both tables. |
 | `scripts/deploy.bat` | Build + hot-deploy + readiness check. |
+| `scripts/verify.sh` | **Canonical ad-hoc verifier**: rebuild → redeploy → 24 assertions (both buttons, HTML-parse contract, rollback, DB state). Run `bash scripts/verify.sh`. |
 
 ## 2. Schema
 
@@ -121,6 +122,12 @@ D:\APPS_EJB_20261119\demoEJB_Transaction\scripts\deploy.bat
 
 Then open **http://localhost:8080/demoEJB-Transaction/** and submit a name + tel.
 
+To prove the whole thing without clicking:
+
+```bat
+bash scripts\verify.sh      :: build + deploy + 24 assertions against MySQL
+```
+
 ## 5. Proof of the transaction (measured)
 
 | # | Action | Result | DB |
@@ -145,7 +152,47 @@ The bean also logs the container's transaction state **before your first stateme
 
 `0` is `jakarta.transaction.Status.STATUS_ACTIVE`.
 
-## 6. How the transaction is actually managed
+## 6. Two buttons, one servlet (client-side only)
+
+`index.html` has the same two fields but **two submit paths**, both hitting the *unchanged* servlet:
+
+| Button | Request | Response | Page |
+|---|---|---|---|
+| **Submit** (blue) | `POST /register` (form POST) | `text/html` — whole page | navigates to `/register` |
+| **Submit-JS** (green) | `fetch('register')` | `text/html` — **parsed in the browser** | stays on `/`, panel updated |
+
+The servlet knows nothing about the second button. `index.html` does all the work:
+
+```js
+const res  = await fetch('register', {method:'POST', body:new URLSearchParams({custName, tel})});
+const doc  = new DOMParser().parseFromString(await res.text(), 'text/html');  // parse the page
+const box  = doc.querySelector('.msg');                                       // .msg ok / .msg bad
+const rows = [...doc.querySelectorAll('table tbody tr')];                      // the result table
+```
+
+1. `fetch` sends the same form-encoded body the `<form>` would.
+2. The response is a **full HTML page** — the servlet's normal output — parsed in memory, never displayed.
+3. Two things are lifted out: the `.msg` block (its `ok`/`bad` class decides green vs red) and the `<tbody>` rows.
+4. They are re-rendered into the panel; the page never reloads.
+
+Measured: `Submit-JS` → `.msg ok`, **7 rows parsed out of the HTML response**, ~243 ms, `location.href` still
+`/demoEJB-Transaction/`. A duplicate name returns `.msg bad` + `ROLLED BACK — …` with the table unchanged.
+
+**Trade-off — why a JSON endpoint is usually the better answer:**
+
+| Client-side HTML parsing | JSON endpoint |
+|---|---|
+| no server change ✔ | servlet change required |
+| one endpoint serves both buttons | two response modes |
+| coupled to CSS class names + table structure | stable field names |
+| HTTP **200 even on failure** — outcome read from prose | real status codes (409 / 500) |
+| no types, no contract | machine-readable `{ok, rows[]}` |
+
+This project deliberately takes the left column: **the servlet is back to its original single-mode form**
+(`?format=json` returns HTML again), and the browser does the parsing.
+
+
+## 7. How the transaction is actually managed
 
 - `@Stateless` ⇒ **CMT** (`@TransactionManagement(CONTAINER)`) and default `TransactionAttribute.REQUIRED`.
 - The container **begins** the JTA transaction before `registerCustomer` runs and **commits** it after
@@ -156,7 +203,7 @@ The bean also logs the container's transaction state **before your first stateme
   *commit* unless you call `SessionContext.setRollbackOnly()` — the classic EJB trap.
 - A `SQLException` is wrapped in `RuntimeException` on purpose: JDBC failures must roll back.
 
-## 7. Gotchas hit while building this (all fixed)
+## 8. Gotchas hit while building this (all fixed)
 
 | Symptom | Cause / fix |
 |---|---|
@@ -167,7 +214,7 @@ The bean also logs the container's transaction state **before your first stateme
 | MySQL 8.4 + old driver | 8.4 removed `mysql_native_password`; use Connector/J 8.x with `allowPublicKeyRetrieval=true`. |
 | Password in `standalone.xml` is plaintext | Fine for a lab; production uses an EAP credential store/vault. |
 
-## 8. Next steps
+## 9. Next steps
 
 - `@TransactionAttribute(REQUIRES_NEW)` on a second method — watch the outer transaction suspend.
 - Two datasources (MySQL + H2) in one method → forces **XA** and a real 2-phase commit.
